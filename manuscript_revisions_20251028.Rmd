@@ -1,0 +1,1591 @@
+---
+title: "Harmful Algae paper figures and tables"
+author: "Dan Killam"
+date: "2025-10-28"
+output:
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(here)
+library(tidyverse)
+library(data.table)
+library(patchwork)
+library(DiagrammeR)
+library(DiagrammeRsvg)
+library(rsvg)
+library(qgam)
+library(rsample)
+library(flextable)
+library(officer)
+library(EnvCpt)
+library(gratia)
+library(mgcv)
+library(tidyverse)
+library(readxl)
+
+
+#set the number of iterations all bootstraps will use for calculations (setting lower will make it run much more quickly)
+iterations<-1000
+#load peterson data, 
+peterson<-read.csv(here("data","sfb_surf_CB_SB_LSB.csv"))
+#load list of regions to apply to data
+regions<-readxl::read_xlsx(here("data","regionboundaries.xlsx"),col_types = c("text","text","text","text"))
+#volume log (on some Peterson samples, the volumes were smaller due to turbidity-related clogging)
+volume1<-readxl::read_xlsx(here("data","USGS_filter log_SFEI.xlsx"),sheet=1)%>%
+  fill(Date)%>%
+  filter(grepl("back",`Station #`)==FALSE)%>%
+  mutate(`Station #` = as.numeric(`Station #`))
+volume2<-readxl::read_xlsx(here("data","USGS_filter log_SFEI.xlsx"),sheet=2)%>%
+  fill(Date)
+volume3<-readxl::read_xlsx(here("data","USGS_filter log_SFEI.xlsx"),sheet=3)%>%
+  fill(Date)
+volume4<-readxl::read_xlsx(here("data","USGS_filter log_SFEI.xlsx"),sheet=4)%>%
+  mutate(across(`ptox vol (mL)`, str_replace, 'X', 'NA'),
+         `vol (mL)` = ifelse(`ptox vol (mL)`=="NA",`chemtax vol (mL)`,`ptox vol (mL)`),
+         `vol (mL)` = as.numeric(`vol (mL)`))%>%
+  fill(Date)
+volume5<-readxl::read_xlsx(here("data","USGS_filter log_SFEI.xlsx"),sheet=5)%>%
+  mutate(`vol (mL)` = ifelse(is.na(`ptox vol (mL)`)==TRUE,`chemtax vol (mL)`,`ptox vol (mL)`),
+         `chemtax vol (mL)` = as.numeric(`chemtax vol (mL)`),
+         `vol (mL)` = as.numeric(`vol (mL)`))%>%
+  fill(Date)%>%
+  dplyr::select(1,2,6)
+#merge the volume dfs
+volumes<-bind_rows(volume1,volume2,volume3,volume4,volume5)%>%
+  dplyr::select(Date,`Station #`,`vol (mL)`)%>%
+  arrange(Date)%>%
+  set_names(c("date","station","volume"))%>%
+  mutate(station = as.character(station))
+rm(volume1,volume2,volume3,volume4,volume5) #remove the volume dfs
+
+#load the 18s data
+one8s<-read_tsv(here("data","All_18S_phytos_only_2014-2020_Sheet18S_Phytos.txt"),show_col_types=TRUE,col_names = TRUE)
+
+#counts in Gymnodinium vs Gymnodinium_clade
+gymondinium_sums <- one8s %>% 
+  dplyr::select(Gymnodinium, Gymnodinium_clade) %>% 
+  rowSums()
+
+#create new combined Gymnodinium column
+one8s <- one8s %>% 
+  dplyr::select(-Gymnodinium, -Gymnodinium_clade) %>% 
+  mutate(Gymnodinium= gymondinium_sums)
+
+one8s<-melt(as.data.table(one8s),id.vars = c("Date","Station","BG_ID","Total Phyto Reads"))
+one8s<-one8s%>%
+  rename(Taxon = variable,
+         Count = value,
+         TotalPhytoReads= `Total Phyto Reads`) %>%
+  mutate(Rep= ifelse(str_detect(Station, "rep"), "Y", "N"),
+         Station= str_replace(Station, "_rep", ""),
+         Date = as.Date(Date,format = "%m/%d/%Y"),
+         Station_Date = paste(Station,Date,sep=" "))
+
+rep_samps <- one8s%>%
+  count(Station_Date) %>% 
+  filter(n> 1)
+
+
+maxRead_reps <- one8s %>% 
+  filter(Station_Date %in% rep_samps$Station_Date) %>% 
+  group_by(Station_Date) %>% 
+  filter(TotalPhytoReads == max(TotalPhytoReads))
+
+
+one8s <- one8s %>% 
+  filter(!(Station_Date %in% rep_samps$Station_Date)) %>% 
+  bind_rows(maxRead_reps)
+rm(maxRead_reps)
+
+#create daily totals for 
+totals<-one8s %>%
+  group_by(Date,Station)%>%
+  summarise(TotalCount=sum(Count))
+
+
+
+here("data","sfb_surf_CB_SB_LSB.csv")
+names<-read.csv(here("data","names.csv"))
+one8s<-left_join(one8s,totals,join_by(Date==Date,Station==Station))
+one8s<-one8s %>% 
+  mutate(Date= as.Date(Date, format = "%m/%d/%Y"),
+         Station = as.character(Station),
+         Proportion = Count/TotalPhytoReads*100,
+         Presence = ifelse(Count == 0,"Nondetect","Detected"))%>%
+  mutate(Count.orig = Count,
+         Count = ifelse(Count==0,1,Count),
+         Dayofyear = yday(Date)) %>%
+  mutate(Station = replace(Station,Station=="34","36"),
+         Station = replace(Station,Station=='21',"22"),
+         Taxon = gsub("Pseudonitzschia","Pseudo-nitzschia",Taxon)) %>%
+  filter(!Station %in% c("Blank","Psn_culture"))%>%
+  mutate(Taxon=case_when(Taxon=="Amoebophryra"~"Amoebophrya",
+                         Taxon=="Amoebophyra"~"Amoebophrya",
+                         Taxon=="Symbodinium"~"Symbiodinium",
+                         str_detect(Taxon, regex("Amoebophrya", ignore_case = TRUE)) ~ "Amoebophrya",
+                         str_detect(Taxon, regex("Amoebophyra", ignore_case = TRUE)) ~ "Amoebophrya",
+                         TRUE~Taxon
+                         ))
+
+one8s<-  merge(one8s,regions,by="Station")%>%
+  filter(Subembayment!="Lower South Bay")%>%
+  left_join(volumes,join_by(Station==station,Date==date))%>%
+  mutate(Date = as.Date(Date),
+         countsperml = Count/volume/2)
+
+one8s$Subembayment = factor(one8s$Subembayment,levels = c("Central Bay", "Upper South Bay", "Mid South Bay"))
+
+seasoncount<-one8s%>%
+  mutate(Season = case_when(Dayofyear>=213 & Dayofyear <=305 ~ 'fall', 
+                            Dayofyear>=305 | Dayofyear<= 31 ~ 'winter',
+                            Dayofyear>=32 & Dayofyear<=121 ~ 'spring',
+                            Dayofyear>=121 & Dayofyear<=212 ~ 'summer'),
+         Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))
+
+units<-readxl::read_xlsx(here("data","units.xlsx"))
+units$variable<-units$Parameter
+peterson$date<-as_date(peterson$date) #make the date column a lubridate date
+petetrimmed<-dplyr::select(peterson,date,station,sal,no32,nh,
+                           po4,dSi,chl_merge,ext_merge,do_merge,spm_merge) #select out only relevant peterson columns
+petelong<-melt(as.data.table(petetrimmed),id.vars=c("date","station")) #melt to a 'long' format to work with in variable selection in the input field
+
+petelong<-merge(petelong,units, by="variable") %>%
+  rename(Station = station)%>%
+  mutate(Station = as.character(Station))%>%
+  left_join(regions,by="Station")
+
+petechl<-peterson %>%
+  dplyr::select(date,station,chl_merge,po4,no32)%>%
+  mutate(station = as.character(station),
+         chl_merge = log10(chl_merge))
+
+rm(peterson,petesffiltered,petetrimmed)
+
+habsuspects<-readxl::read_xlsx(here("data","habsuspects.xlsx"))
+
+
+## Mussel data format 
+
+## All tissue concentrations in ng/g (ppb), unless noted as ppm in the column name
+
+## Minimum Detection Limits (MDSL) 
+## DA= 0.30 ppb for 1 g tissue.
+## MCY=  0.10 ppb for 1 g tissue.
+## STX= 10 ppb (1g tissue, 10mL extract)
+
+
+site_codes <- read_tsv(here("data","tox_data","Mussel_Toxins_20210913_SiteCodes_clean3.txt")) %>% 
+  rename(Lat= Latitude, Lon= Longitude) %>% 
+  #mutate(SiteCode2= ifelse(SiteCode == "GGYC", "GG", 
+  #                         ifelse(SiteCode == "RWC", "RW", 
+  #                                ifelse(SiteCode == "SFSF", "TB", SiteCode)))) %>% 
+  dplyr::select(SiteCode, SiteCode2, Lat, Lon, Region) %>% 
+  distinct(.)
+
+#missing_sites <- tibble(SiteCode= c("B1", "BM2", "CG", "GGYC1", "GGYC2", "LP", "PS", "RB1", "RB2", "SBYC", "SFYC", "SL"),
+#                        SiteCode2= c("BI", "BM", NA, "GG", "GG", NA, "PSP", "RB", "RB", NA, "GG", NA))
+
+new_col_names <- c("UCSC_ID", "Date", "SiteCode", "MC_RR", "MC_YR", "MC_LR", "MC_LA",
+                   "MC_total", "DA", "DA_ppm", "DA_ppb", "STX",
+                   "STX_ppb", "TempC", "SpCond", "DO_PercSat", "Turb_FNU", "Chl_RFU", 
+                   "fdom_RFU", "Year", "Month", "Day")
+
+## Read mussel toxin data
+muss <- read_csv(here("data","tox_data","Mussel_Toxins_20210913_tox1.gsheet - All_Results_2015-Present.csv"), 
+                 skip=2, n_max= 1091, col_names = new_col_names) %>% 
+  dplyr::select(Date:STX_ppb, -DA_ppb) %>% 
+  mutate(across(MC_RR:STX_ppb, ~ ifelse(.x == "<MDL" | .x == "d" | .x == "ND" | .x == "nd", "-88", .x))) %>%  # change <MDL to -88
+  # Change detection, but not quantified, to 1/2 the MDL
+  mutate(across(MC_RR:MC_total, ~ ifelse(.x == "d", "0.05", .x))) %>%  # change detected, d, to 0.05
+  mutate(across(DA:DA_ppm, ~ ifelse(.x == "d", "0.15", .x))) %>%  # change detected, d, to 0.15
+  mutate(across(STX:STX_ppb, ~ ifelse(.x == "d", "5", .x))) %>%  # change detected, d, to 5
+  mutate(across(MC_RR:STX_ppb, ~ str_replace(.x, ",", ""))) %>%  # Remove comma separators from numbers
+  mutate(across(MC_RR:STX_ppb, ~ as.numeric(.x))) %>%  # Round to 2 significant figures  
+  mutate(STX_ppb2= ifelse(STX_ppb > 0, STX_ppb*10, STX_ppb), #rescale STX_ppb by a factor of 10
+         DA_ppb= ifelse(DA_ppm > 0, DA_ppm*1000, DA_ppm), #convert DA_ppm to ppb by multiplying by 1000
+         Date= mdy(Date),
+         Year= as.character(year(Date)),
+         Month= lubridate::month(Date, label= TRUE),
+         DOY= ymd(str_c("1904", Month, day(Date), sep= "-"))) %>% 
+  left_join(., site_codes, by= "SiteCode") %>% 
+  mutate(SiteCode_Date= str_c(SiteCode, Date, sep= "_"))
+## Count measurements at the sites
+site_counts <- muss %>% 
+  group_by(SiteCode2) %>% 
+  count() %>% 
+  mutate(HighCount= ifelse(n>100, "Y", "N")) # 8 sites have been continuously sampled and have >100 samples
+
+muss.l2 <- muss%>% 
+  pivot_longer(names_to = "toxin", values_to = "value", MC_RR:DA_ppb) %>% 
+  filter(!is.na(value)) %>% 
+  mutate(value2= ifelse(value < 0, 0, value)) %>% 
+  mutate(value2= ifelse(toxin == "MC_total" & value2 <= 0.1, 0, value2), # MC LOD of 0.1 ng/g
+         detect= ifelse(value <= 0, "Non-detect", 'Detected'),
+         #        toxin= ifelse(toxin == "STX_ppb2", "STX",
+         #                      ifelse(toxin == "DA_ppb", "DA", toxin))) %>% 
+         # filter(toxin != "STX_ppb" & toxin != "DA_ppm") %>% 
+         toxin= ifelse(toxin == "STX_ppb", "STX",
+                       ifelse(toxin == "DA_ppb", "DA", toxin))) %>% 
+  filter(toxin != "STX_ppb2" & toxin != "DA_ppm") %>% 
+  left_join(., dplyr::select(site_counts, SiteCode2, HighCount)) %>% 
+  mutate(across(value:value2, ~round(.x, 3))) %>% 
+  distinct()%>% 
+  dplyr::select(-SiteCode, -Lat, -Lon, -SiteCode_Date) %>% 
+  group_by(Date, SiteCode2, toxin) %>% 
+  filter(value2 == max(value2)) %>% 
+  distinct(.)%>% 
+  filter(toxin == "DA" | toxin == "STX" | toxin == "MC_total")%>%
+  mutate(Presence = ifelse(value2 == 0,"Nondetect","Detected"),
+         Dayofyear = yday(Date))%>%
+  full_join(regions,join_by(SiteCode2 == Station))%>%
+  dplyr::select(-Region.y)%>%
+  rename(Region = Region.x)
+
+rm(muss)
+
+allDA<-muss.l2 %>%
+  filter(toxin=="DA")
+allPN<-one8s%>%
+  filter(Taxon=="Pseudo-nitzschia")%>%
+  full_join(allDA,join_by(closest(Date <= Date),Station==NearestPeterson),suffix=c(".18s",".tox"))%>%
+  mutate(timediff = as.numeric(Date.tox-Date.18s),
+         threshold = ifelse(value2>10,1,0))%>%
+  filter(timediff<12)
+
+
+allSTX<-muss.l2 %>%
+  filter(toxin=="STX")
+allalex<-one8s%>%
+  filter(Taxon=="Alexandrium")%>%
+  full_join(allSTX,join_by(closest(Date <= Date),Station==NearestPeterson),suffix=c(".18s",".tox"))%>%
+  mutate(timediff = as.numeric(Date.tox-Date.18s),
+         threshold = ifelse(value2>100,1,0))%>%
+  filter(timediff<14)
+
+#import qPCR data
+qpcr<-read.csv(here("data","qpcr","qpcr_combined.csv"))%>%
+  mutate(date=as_date(date,format="%m/%d/%Y"),
+         qpcr = as.numeric(ifelse(qpcr == "ND",1,qpcr)),
+         station = as.character(station))%>%
+  dplyr::select(-c(count.18s,totalreads.18s))
+
+#import new Dinophysis qPCR data
+d2023<-readxl::read_xlsx(here("data","qpcr","Dinophysis_QPCR_2023.xlsx"))%>%
+  dplyr::select(Station,Date,`Mean (copies/mL)`)%>%
+  rename(qpcr = `Mean (copies/mL)`,
+         station = Station,
+         date = Date)%>%
+  mutate(qpcr = as.numeric(qpcr),
+         taxon="Dinophysis",
+         station = factor(station),
+         qpcr = ifelse(is.na(qpcr)==TRUE,1,qpcr))
+
+#import new Pseudo-nitzschia qPCR data
+pn2023<-readxl::read_xlsx(here("data","qpcr","Psn_QPCR_2023.xlsx"))%>%
+  dplyr::select(Station,Date,`Mean (copies/mL)`)%>%
+  rename(qpcr = `Mean (copies/mL)`,
+         station = Station,
+         date = Date)%>%
+  mutate(qpcr = as.numeric(qpcr),
+         taxon = "Pseudo-nitzschia",
+         station = factor(station),
+         qpcr = ifelse(is.na(qpcr)==TRUE,1,qpcr))
+
+#bind the data types together
+qpcr<-bind_rows(qpcr,d2023,pn2023)
+
+#remove the intermediate files
+rm(d2023,pn2023,names,rep_samps,site_codes,site_counts,totals,volumes,regions)
+
+```
+
+## Figure 1: Map
+See stationmap.R (lots of packages there's no need to call for the other figures).
+
+
+## Figure 2: Conceptual diagram
+For this I use the package DiagrammR, intending to show how the different data types flow into each other for assessment.
+
+```{r flowchart, echo=FALSE,warning=FALSE}
+
+
+graph<-grViz("
+  digraph flowchart {
+    # Define nodes with custom labels and details
+    node [shape = rectangle, width = 1.5, height = 0.6]
+
+    Chl_a [label = 'Chl-a increases', shape = box, color='#458B00', fontname = 'Arial', style = filled, fillcolor = '#CAFF70']
+  
+    # Proportionate increase node (transparent)
+    prop_increase [label = 'Proportionate\nincrease', shape = box, fontname = 'Arial', style = filled, fillcolor = 'transparent', color=black]
+    
+    # Branch for qPCR
+    qPCR [label = '<qPCR<br/>Details>', shape = box, fontname = 'Arial']
+
+    # Disproportionate increase node (transparent)
+    disprop_increase [label = 'Disproportionate\nincrease', shape = box, fontname = 'Arial', style = filled, fillcolor = 'transparent', color=black]
+    
+    # Subgraph for Hypotheses
+    subgraph cluster_hypotheses {
+      label = ''
+      hypotheses_label [label = 'Hypotheses', shape = plaintext, width = 2, height = 0.5, style = filled, fillcolor = white, color = black, fontname = 'Arial']
+      prop_increase
+      disprop_increase
+      color = black
+      style = filled
+      fillcolor = white
+    }
+
+    # Branch for HAB abundance
+    subgraph cluster_metabarcoding {
+      label = ''
+      hab_label [label = 'Quantifiable HAB\nResponses', shape = plaintext, width = 2, height = 0.5, style = filled, fillcolor = lightskyblue1, color = blue, fontname = 'Arial', just = 'l']
+      qPCR [label = '• qPCR: absolute abundance\nincreases for two measured taxa\n• 18S: relative abundance stays constant', shape = box, color=blue]
+      metabarcoding_18s [label = '18S metabarcoding\n(relative % abundance,\navailable for all taxa)', shape = box, fontname = 'Arial', color=blue]
+      color = blue
+      style = filled
+      fillcolor = lightskyblue1
+    }
+
+    rbt [label = 'Relative abundance\nthreshold', shape = box, fontname = 'Arial', style = filled, fillcolor = 'transparent', color='transparent']
+    tt [label = 'Toxin threshold', shape = box, fontname = 'Arial', style = filled, fillcolor = 'transparent', color='transparent']
+
+    # Branch for HAB abundance
+    subgraph cluster_outcomes {
+      label = ''
+      outcome_label [label = 'Undesirable\nOutcomes', shape = plaintext, width = 2, height = 0.5, style = filled, fillcolor = '#FA8072', color = '#CD0000', fontname = 'Arial']
+      Mussel_toxin [label = 'Toxin exceedance\n(saxitoxin, domoic acid)', shape = box, fontname = 'Arial', color='#CD0000', style=filled, fillcolor='#FA8072']
+      bloom [label = 'Risk of high biomass\nbloom', shape = box, fontname = 'Arial', color='#CD0000', style=filled, fillcolor='#FA8072']
+      color = '#CD0000'
+      style = filled
+      fillcolor = '#FA8072'
+    }
+  
+    # Connect nodes
+    Chl_a -> prop_increase 
+    prop_increase -> qPCR
+    Chl_a -> disprop_increase  
+    disprop_increase -> metabarcoding_18s
+  
+    qPCR -> tt
+    tt -> Mussel_toxin
+    metabarcoding_18s -> rbt
+    rbt -> bloom
+    rbt -> Mussel_toxin
+  
+    
+
+    hab_label -> outcome_label [dir = none, style = invis]
+  }
+")
+
+graph
+svgexp<-export_svg(graph)
+
+rsvg_pdf(charToRaw(svgexp),file=here("Figures","Fig2.pdf"))
+
+```
+
+
+##Figure 2: map
+The bathymetry file is too large to include in this repo, and the mapping packages are somewhat specific, but let me know if you'd like it and I will send you the relevant files and code!
+
+## Figure 3: Eukaryotic time series
+
+Figure 3 represents combined time series of Alexandrium 18s, saxitoxin, Pseudo-nitzschia 18s, domoic acid, and chl-a concentration, for general time series view of the data
+
+```{r eukhabs, fig.width=8.5,fig.height=8, dpi=600,echo=FALSE,warning=FALSE,message=FALSE}
+stn.list<-c("18","21","22","24","27","30","32","33","DMB","SMB")
+
+countmeas<-"Proportion" #or "Count" or "countsperml" or "Proportion"
+axisname<-"\n18S % of total reads" #or "\n18S Count" "\n18S reads/mL" or "\n18S % of total reads"
+
+
+
+#alexandrium plot
+alex<-one8s%>%
+  filter(Station %in% stn.list & Taxon %in% c("Alexandrium"))%>%
+  mutate(Date=as_date(Date),
+         Proportion = ifelse(Proportion==0,Proportion+0.0005,Proportion))%>%
+  ggplot()+
+  geom_point(aes_string("Date",countmeas,col="Station",shape="Presence"),size=2)+
+  scale_y_continuous(trans="log10",breaks=c(0.01,0.1,1,10,100),labels = factor(c(0.01,0.1,1,10,100)))+
+  scale_x_date(limits = c(min(muss.l2$Date,na.rm=TRUE),max(muss.l2$Date,na.rm=TRUE)),date_breaks = "1 year",date_labels = "%Y")+
+  xlab(element_blank())+
+  ylab(expression(atop(italic(Alexandrium), "18S % of total reads")))+
+  annotation_logticks()+
+  theme_bw(base_size = 14)+
+  scale_color_brewer(palette = "Set2")+
+  scale_shape_manual(values = c('Detected'=16,'Nondetect'=1)) +
+  theme(strip.text.x = element_text(size = 12),
+        strip.background = element_rect(colour = "white", fill = "white"),
+        axis.text.x = element_blank())+
+  guides(shape="none")+
+  labs(col=element_blank())
+
+#saxitoxin plot
+saxplot<-muss.l2%>%
+  filter(Region == "South Bay" & toxin == "STX") %>%
+  mutate(value2 = ifelse(Presence == "Nondetect",10,value2))%>%
+  ggplot()+
+  geom_point(aes(Date,value2,col=SiteCode2,shape=Presence))+
+  scale_y_continuous(trans = "log10")+
+  #geom_hline(yintercept = 800,col="red")+
+  scale_x_date(limits = c(min(muss.l2$Date,na.rm=TRUE),max(muss.l2$Date,na.rm=TRUE)),date_breaks = "1 year",date_labels = "%Y")+
+  xlab(element_blank())+
+  ylab("Mussel STX (ng/g)")+
+  theme_bw(base_size = 14)+
+  annotation_logticks()+
+  scale_color_brewer(palette = "Dark2")+
+  scale_shape_manual(values = c('Detected'=16,'Nondetect'=1)) +
+  theme(strip.text.x = element_text(size = 12),
+        strip.background = element_rect(colour = "white", fill = "white"),
+        axis.text.x = element_blank())+
+  guides(shape="none")+
+  labs(col=element_blank())
+
+#chlorophyll plot
+chlplot<-petelong%>%
+  filter(Station %in% stn.list & Parameter == "chl_merge")%>%
+  ggplot()+
+  geom_line(aes(date,value,col=Station))+
+  scale_y_continuous(trans = "log10",limits = c(1,60))+
+  scale_x_date(limits = c(min(muss.l2$Date,na.rm = TRUE),max(muss.l2$Date,na.rm = TRUE)),date_breaks = "1 year",date_labels = "%Y")+
+  xlab(element_blank())+
+  ylab("Chl-a (µg/L)")+
+  annotation_logticks()+
+  theme_bw(base_size = 14)+
+  scale_color_brewer(palette = "Dark2")+
+  scale_shape_manual(values = c('Detected'=16,'Nondetect'=1)) +
+  theme(strip.text.x = element_text(size = 12),
+        strip.background = element_rect(colour = "white", fill = "white"))+
+  guides(shape="none")+
+  labs(col=element_blank())
+fig3<-alex/saxplot/chlplot +
+  plot_annotation(tag_levels = "A")
+fig3
+pdf(here("Figures","Fig3.pdf"),width = 8.5,height=8)
+fig3
+dev.off()
+```
+
+## Figure 4: qPCR vs toxin
+
+Figure 4 compares toxin concentration to qPCR counts/mL of matched peterson stations
+
+```{r qpcrvstox, fig.width=8.5,fig.height=7, dpi=600,echo=FALSE,warning=FALSE,message=FALSE}
+#filter just Pseudo-nitzschia values
+
+qpcr_cprplot<-function(taxon,toxlevel){
+  #all of these are switches so that either Alexandrium and its analytical limit or Pseudo-nitzschia and its limit are analyzed
+  minimum<-switch(taxon,"Alexandrium"=10,"Pseudo-nitzschia"=0.3)
+  toxin<-switch(taxon,"Alexandrium"=allSTX,"Pseudo-nitzschia"=allDA)
+  toxname<-switch(taxon,"Alexandrium"="[STX]","Pseudo-nitzschia"="[DA]")
+  #rows<-switch(taxon,"Alexandrium"=383,"Pseudo-nitzschia"=399)
+  searchname<-switch(taxon,"Alexandrium"="Alexandrium","Pseudo-nitzschia"="Pseudo-nitzschia")
+  
+  cpr<-qpcr%>%
+    filter(taxon==searchname)%>%
+    #select the closest days matching in the toxin dataset, and matching according to whether they were previously joined as the nearest Peterson station
+    full_join(toxin,join_by(closest(date <= Date),station==NearestPeterson))%>%
+    #exact chlorophyll matches by date and season
+    #create a time difference column (how many days after the Peterson was the mussel collected)
+    mutate(timediff = as.numeric(as_date(Date)-as_date(date)),
+           toxthresh = as.numeric(ifelse(value2>toxlevel,1,0)))%>%
+    #remove any matches greater than 14 days separated
+    filter(timediff<14)%>%
+    mutate(value2 = case_when(value2<=minimum~minimum,
+                              TRUE~value2))%>%
+    dplyr::select(date,toxthresh,qpcr,value2)%>%
+    arrange(qpcr,toxthresh)%>%
+    mutate(index = seq(nrow(.)-1,0,-1),
+           toxprob = (sum(toxthresh)-cumsum(toxthresh))/index
+    )%>%
+    filter(is.na(toxthresh)==FALSE)
+  
+  test<-sample(c(cpr$qpcr,cpr$toxthresh),replace = TRUE)
+  
+  #bootstrap 1000 times, with replacement
+  set.seed(123)
+  test<-bootstraps(cpr,times=iterations,apparent = TRUE)
+  
+  #create a function which goes through the bootstrap object, generating the CPAs for each of the 1000 resampled objects (similar to a tibble)
+  cplist<-function(split){
+    split<-analysis(split)%>%
+      arrange(qpcr)%>%
+      mutate(toxprob.bs = (sum(toxthresh)-cumsum(toxthresh))/index)
+    return(split)
+  }
+  
+  #generate a blank data frame
+  bci<-data.frame(ID = 1:nrow(cpr))
+  #list-apply the cplist function to all the entries in the bootstrapped object, to make a combined dataframe including all the CPAs side by side
+  what<-lapply(test$splits, cplist)
+  for (i in seq(1,iterations+1,1)){
+    bci[[paste("run",i,sep="")]]<-what[[i]]$toxprob.bs
+  }
+  
+  #extract the 97.5th and 2.5th percentile along every row of the combined 1000 CPAs to create a confidence interval 
+  percentiles_95<-apply(bci,1, function(row) quantile(row,probs = 0.975,na.rm=TRUE))
+  percentiles_5<-apply(bci,1, function(row) quantile(row,probs = 0.025,na.rm=TRUE))
+  cpr$toxthresh95<-percentiles_95
+  cpr$toxthresh05<-percentiles_5
+  
+  concernthresh<-cpr%>%
+    filter(qpcr>0,
+           toxthresh95>0.5)%>%
+    arrange(toxthresh95)%>%
+    head(1)
+  
+  #plot the CPA, with the confidence interval as a ribbon
+  cprplot<-ggplot(cpr)+
+    geom_point(aes(qpcr,toxprob))+
+    geom_ribbon(aes(qpcr,ymin=toxthresh05,ymax=toxthresh95),col="gray",alpha=0.5)+
+    scale_x_continuous(paste(taxon," (counts/mL)",sep = ""),trans = "log10")+
+    scale_y_continuous(paste("Prob. of >",toxlevel," ng/g ",toxname,sep = ""))+
+    #geom_text(data=concernthresh,aes(label=paste("t=",qpcr,sep=""),x=0.01,y=.9),col="red")+
+    #geom_vline(data=concernthresh,aes(xintercept=qpcr),col="red")+
+    theme_bw(base_size = 12)+  
+    coord_cartesian(ylim=c(0,1))+
+    theme_bw(base_size = 15)
+  cprplot
+}
+
+
+#alexandrium values
+qtoxalex<-qpcr%>%
+  filter(taxon=="Alexandrium")%>%
+  mutate(date=as_date(date))%>%
+  full_join(allSTX,join_by(closest(date <= Date),station==NearestPeterson),suffix=c(".qpcr",".tox"))%>%
+  left_join(petechl,join_by(date == date,station==station))%>%
+  mutate(timediff = as.numeric(Date-date),
+         threshold = ifelse(value2>10,1,0),
+         Presence = ifelse(value2 == 0,"Nondetect","Detect"),
+         value2 = ifelse(Presence == "Nondetect",7,value2),
+         Dayofyear = yday(date),
+         Season = case_when(Dayofyear>=213 & Dayofyear <=305 ~ 'fall', 
+                            Dayofyear>=305 | Dayofyear<= 31 ~ 'winter',
+                            Dayofyear>=32 & Dayofyear<=121 ~ 'spring',
+                            Dayofyear>=121 & Dayofyear<=212 ~ 'summer'),
+         Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))%>%
+  filter(timediff<12,
+         is.na(qpcr)==FALSE,
+         is.na(value2)==FALSE)
+alexgam75<-qgam(log10(value2) ~ s(log10(qpcr)),qu=0.75,data=qtoxalex)
+qtoxalex$pred75<-predict(alexgam75,qtoxalex)
+alexgam9<-qgam(log10(value2) ~ s(log10(qpcr)),qu=0.9,data=qtoxalex)
+qtoxalex$pred9<-predict(alexgam9,qtoxalex)
+
+
+
+#alexandrium-STX plot
+qtaplot<-ggplot(qtoxalex)+
+  geom_point(aes(qpcr,value2,shape=Presence),size=2)+
+  geom_line(aes(qpcr,10^pred9,col="90th percentile"))+
+  geom_line(aes(qpcr,10^pred75,col="75th percentile"))+
+  #scale_color_viridis()+
+  scale_y_continuous("Mussel [STX] (ng/g)",trans = "log10")+
+  scale_x_continuous("Alexandrium (counts/mL)",trans = "log10")+
+  scale_shape_manual(values = c('Detect'=16,'Nondetect'=1)) +
+  scale_color_manual(breaks=c('75th percentile', '90th percentile'),
+                     values=c('75th percentile'='orange', '90th percentile'='red'))+
+  #labs(col="Year")+
+  theme_bw(base_size = 15)+
+  theme(legend.position = c(0.3, 0.8),
+        legend.background = element_rect(fill = "transparent"),
+        legend.title = element_blank())+
+  guides(shape=FALSE)
+
+qchlalexplot<-ggplot(qtoxalex)+
+  geom_point(aes(10^chl_merge,qpcr,col=Season),size=2)+
+  #scale_color_viridis()+
+  scale_x_continuous("Chl-a (µg/L)",trans = "log10")+
+  scale_y_continuous("Alexandrium (counts/mL)",trans = "log10")+
+  scale_shape_manual(values = c('Detect'=16,'Nondetect'=1)) +
+  #labs(col="Year")+
+  theme_bw(base_size = 15)+
+  theme(legend.position = "none")
+
+a300q<-qpcr_cprplot("Alexandrium",100)
+
+cpr<-qpcr%>%
+  filter(taxon=="Alexandrium")%>%
+  mutate(date=as_date(date))%>%
+  left_join(petechl,join_by(date == date,station==station))%>%
+  #exact chlorophyll matches by date and season
+  #create a time difference column (how many days after the Peterson was the mussel collected)
+  mutate(toxthresh = as.numeric(ifelse(qpcr>1000,1,0)))%>%
+  dplyr::select(date,toxthresh,qpcr,chl_merge)%>%
+  arrange(chl_merge)%>%
+  mutate(index = seq(nrow(.)-1,0,-1),
+         toxprob = (sum(toxthresh)-cumsum(toxthresh))/index
+  )%>%
+  filter(is.na(toxthresh)==FALSE)%>%
+  mutate(Presence = ifelse(qpcr == 1,"Nondetect","Detect"),
+         Dayofyear = yday(date),
+         Season = case_when(Dayofyear>=213 & Dayofyear <=305 ~ 'fall', 
+                            Dayofyear>=305 | Dayofyear<= 31 ~ 'winter',
+                            Dayofyear>=32 & Dayofyear<=121 ~ 'spring',
+                            Dayofyear>=121 & Dayofyear<=212 ~ 'summer'),
+         Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))
+
+test<-sample(c(cpr$qpcr,cpr$toxthresh),replace = TRUE)
+
+#bootstrap 1000 times, with replacement
+set.seed(123)
+test<-bootstraps(cpr,times=1000,apparent = TRUE)
+
+#create a function which goes through the bootstrap object, generating the CPAs for each of the 1000 resampled objects (similar to a tibble)
+cplist<-function(split){
+  split<-analysis(split)%>%
+    arrange(chl_merge)%>%
+    mutate(toxprob.bs = (sum(toxthresh)-cumsum(toxthresh))/index)
+  return(split)
+}
+
+#generate a blank data frame
+bci<-data.frame(ID = 1:nrow(cpr))
+#list-apply the cplist function to all the entries in the bootstrapped object, to make a combined dataframe including all the CPAs side by side
+what<-lapply(test$splits, cplist)
+for (i in seq(1,iterations+1,1)){
+  bci[[paste("run",i,sep="")]]<-what[[i]]$toxprob.bs
+}
+
+#extract the 97.5th and 2.5th percentile along every row of the combined 1000 CPAs to create a confidence interval 
+percentiles_95<-apply(bci,1, function(row) quantile(row,probs = 0.975,na.rm=TRUE))
+percentiles_5<-apply(bci,1, function(row) quantile(row,probs = 0.025,na.rm=TRUE))
+cpr$toxthresh95<-percentiles_95
+cpr$toxthresh05<-percentiles_5
+
+concernthresh<-cpr%>%
+  filter(qpcr>0,
+         toxthresh95>0.5)%>%
+  arrange(toxthresh95)%>%
+  head(1)
+
+#plot the CPA, with the confidence interval as a ribbon
+alchlcprplot<-ggplot(cpr)+
+  geom_point(aes(10^chl_merge,toxprob))+
+  geom_ribbon(aes(10^chl_merge,ymin=toxthresh05,ymax=toxthresh95),col="gray",alpha=0.5)+
+  scale_x_continuous("Chl-a (µg/L)",trans = "log10")+
+  scale_y_continuous(paste("Prob. of >",1000," cts/mL ","\nAlexandrium",sep = ""))+
+  #geom_text(data=concernthresh,aes(label=paste("t=",qpcr,sep=""),x=0.01,y=.9),col="red")+
+  #geom_vline(data=concernthresh,aes(xintercept=qpcr),col="red")+
+  theme_bw(base_size = 12)+  
+  coord_cartesian(ylim=c(0,1))+
+  theme_bw(base_size = 15)
+
+fig4<-(qtaplot + qchlalexplot)/(a300q + alchlcprplot)+ plot_annotation(tag_levels = 'A')
+fig4
+
+pdf(here("Figures","Fig4.pdf"),width = 8.5,height=7)
+fig4
+dev.off()
+
+```
+
+
+## Figure 5: 18s vs toxin
+
+Figure 5 compares toxin concentration to 18S of matched peterson stations. It proceeds to bootstrap 1000x, and extracts the 95th and 5th percentiles of at each chlorophyll value from the bootstrapped CPAs to represent the confidence interval
+
+```{r 18svstox, fig.width=8.5,fig.height=4, dpi=600,echo=FALSE,warning=FALSE,message=FALSE}
+#function to generate toxin vs 18s CPAs
+cprplot<-function(taxon,toxlevel){
+  #all of these are switches so that either Alexandrium and its analytical limit or Pseudo-nitzschia and its limit are analyzed
+  minimum<-switch(taxon,"Alexandrium"=10,"Pseudo-nitzschia"=0.3)
+  toxin<-switch(taxon,"Alexandrium"=allSTX,"Pseudo-nitzschia"=allDA)
+  toxname<-switch(taxon,"Alexandrium"="[STX]","Pseudo-nitzschia"="[DA]")
+  rows<-switch(taxon,"Alexandrium"=383,"Pseudo-nitzschia"=399)
+  searchname<-switch(taxon,"Alexandrium"="Alexandrium","Pseudo-nitzschia"="Pseudo-nitzschia")
+  
+  cpr<-one8s%>%
+    filter(Taxon==searchname)%>%
+    #select the closest days matching in the toxin dataset, and matching according to whether they were previously joined as the nearest Peterson station
+    full_join(toxin,join_by(closest(Date <= Date),Station==NearestPeterson),suffix=c(".18s",".tox"))%>%
+    #exact chlorophyll matches by date and season
+    left_join(petechl,join_by(Date.18s == date,Station==station))%>%
+    #create a time difference column (how many days after the Peterson was the mussel collected)
+    mutate(timediff = as.numeric(Date.tox-Date.18s),
+           toxthresh = as.numeric(ifelse(value2>toxlevel,1,0)))%>%
+    #remove any matches greater than 14 days separated
+    filter(timediff<14)%>%
+    mutate(value2 = case_when(value2<=minimum~minimum,
+                              TRUE~value2))%>%
+    dplyr::select(Date.18s,toxthresh,Count,Count.orig,Proportion,chl_merge,value2)%>%
+    arrange(Proportion,toxthresh)%>%
+    mutate(index = seq(nrow(.)-1,0,-1),
+           toxprob = (sum(toxthresh)-cumsum(toxthresh))/index
+    )%>%
+    filter(is.na(toxthresh)==FALSE)%>%
+    dplyr::slice(-(rows+1))
+  
+  test<-sample(c(cpr$Proportion,cpr$toxthresh),replace = TRUE)
+  
+  #bootstrap 1000 times, with replacement
+  set.seed(123)
+  test<-bootstraps(cpr,times=iterations,apparent = TRUE)
+  
+  #create a function which goes through the bootstrap object, generating the CPAs for each of the 1000 resampled objects (similar to a tibble)
+  cplist<-function(split){
+    split<-analysis(split)%>%
+      arrange(Proportion,chl_merge)%>%
+      mutate(toxprob.bs = (sum(toxthresh)-cumsum(toxthresh))/index)
+    return(split)
+  }
+  
+  #generate a blank data frame
+  bci<-data.frame(ID = 1:rows)
+  #list-apply the cplist function to all the entries in the bootstrapped object, to make a combined dataframe including all the CPAs side by side
+  what<-lapply(test$splits, cplist)
+  for (i in seq(1,iterations+1,1)){
+    bci[[paste("run",i,sep="")]]<-what[[i]]$toxprob.bs
+  }
+  
+  #extract the 97.5th and 2.5th percentile along every row of the combined 1000 CPAs to create a confidence interval 
+  percentiles_95<-apply(bci,1, function(row) quantile(row,probs = 0.975,na.rm=TRUE))
+  percentiles_5<-apply(bci,1, function(row) quantile(row,probs = 0.025,na.rm=TRUE))
+  cpr$toxthresh95<-percentiles_95
+  cpr$toxthresh05<-percentiles_5
+  
+  concernthresh<-cpr%>%
+    filter(Proportion>0,
+           toxthresh95>0.5)%>%
+    arrange(toxthresh95)%>%
+    head(1)
+  
+  #plot the CPA, with the confidence interval as a ribbon
+  cprplot<-ggplot(cpr)+
+    geom_point(aes(Proportion,toxprob))+
+    geom_ribbon(aes(Proportion,ymin=toxthresh05,ymax=toxthresh95),col="gray",alpha=0.5)+
+    scale_x_continuous(paste(taxon," % of total reads",sep = ""),trans = "log10")+
+    scale_y_continuous(paste("Prob. of mussels\n>",toxlevel," ng/g ",toxname,sep = ""))+
+    geom_text(data=concernthresh,aes(label=paste("t=",round(Proportion,2),"%",sep=""),x=0.01,y=.9),col="red")+
+    geom_vline(data=concernthresh,aes(xintercept=Proportion),col="red")+
+    theme_bw(base_size = 12)+  
+    coord_cartesian(ylim=c(0,1))
+  cprplot
+}
+
+#alexandrium CPAs for 100 and 300 ng/g toxin levels
+a100<-cprplot("Alexandrium",100)
+a300<-cprplot("Alexandrium",300)
+
+
+#Pseudo-nitzschia vs 10 and 100 ng/g
+pn10<-cprplot("Pseudo-nitzschia",10)
+pn100<-cprplot("Pseudo-nitzschia",100)
+
+#combined plot
+fig5<-(a100+a300)
+fig5
+
+pdf(here("Figures","Fig5.pdf"),width = 8.5,height=4)
+fig5
+dev.off()
+
+```
+
+
+## Small version of plot for visual abstract
+```{r smalltox, fig.width=5,fig.height=5, dpi=1000,echo=FALSE,warning=FALSE,message=FALSE}
+cprplot.sm<-function(taxon,toxlevel){
+  #all of these are switches so that either Alexandrium and its analytical limit or Pseudo-nitzschia and its limit are analyzed
+  minimum<-switch(taxon,"Alexandrium"=10,"Pseudo-nitzschia"=0.3)
+  toxin<-switch(taxon,"Alexandrium"=allSTX,"Pseudo-nitzschia"=allDA)
+  toxname<-switch(taxon,"Alexandrium"="[STX]","Pseudo-nitzschia"="[DA]")
+  rows<-switch(taxon,"Alexandrium"=383,"Pseudo-nitzschia"=399)
+  searchname<-switch(taxon,"Alexandrium"="Alexandrium","Pseudo-nitzschia"="Pseudo-nitzschia")
+  
+  cpr<-one8s%>%
+    filter(Taxon==searchname)%>%
+    #select the closest days matching in the toxin dataset, and matching according to whether they were previously joined as the nearest Peterson station
+    full_join(toxin,join_by(closest(Date <= Date),Station==NearestPeterson),suffix=c(".18s",".tox"))%>%
+    #exact chlorophyll matches by date and season
+    left_join(petechl,join_by(Date.18s == date,Station==station))%>%
+    #create a time difference column (how many days after the Peterson was the mussel collected)
+    mutate(timediff = as.numeric(Date.tox-Date.18s),
+           toxthresh = as.numeric(ifelse(value2>toxlevel,1,0)))%>%
+    #remove any matches greater than 14 days separated
+    filter(timediff<14)%>%
+    mutate(value2 = case_when(value2<=minimum~minimum,
+                              TRUE~value2))%>%
+    dplyr::select(Date.18s,toxthresh,Count,Count.orig,Proportion,chl_merge,value2)%>%
+    arrange(Proportion,toxthresh)%>%
+    mutate(index = seq(nrow(.)-1,0,-1),
+           toxprob = (sum(toxthresh)-cumsum(toxthresh))/index
+    )%>%
+    filter(is.na(toxthresh)==FALSE)%>%
+    dplyr::slice(-(rows+1))
+  
+  test<-sample(c(cpr$Proportion,cpr$toxthresh),replace = TRUE)
+  
+  #bootstrap 1000 times, with replacement
+  set.seed(123)
+  test<-bootstraps(cpr,times=iterations,apparent = TRUE)
+  
+  #create a function which goes through the bootstrap object, generating the CPAs for each of the 1000 resampled objects (similar to a tibble)
+  cplist<-function(split){
+    split<-analysis(split)%>%
+      arrange(Proportion,chl_merge)%>%
+      mutate(toxprob.bs = (sum(toxthresh)-cumsum(toxthresh))/index)
+    return(split)
+  }
+  
+  #generate a blank data frame
+  bci<-data.frame(ID = 1:rows)
+  #list-apply the cplist function to all the entries in the bootstrapped object, to make a combined dataframe including all the CPAs side by side
+  what<-lapply(test$splits, cplist)
+  for (i in seq(1,iterations+1,1)){
+    bci[[paste("run",i,sep="")]]<-what[[i]]$toxprob.bs
+  }
+  
+  #extract the 97.5th and 2.5th percentile along every row of the combined 1000 CPAs to create a confidence interval 
+  percentiles_95<-apply(bci,1, function(row) quantile(row,probs = 0.975,na.rm=TRUE))
+  percentiles_5<-apply(bci,1, function(row) quantile(row,probs = 0.025,na.rm=TRUE))
+  cpr$toxthresh95<-percentiles_95
+  cpr$toxthresh05<-percentiles_5
+  
+  concernthresh<-cpr%>%
+    filter(Proportion>0,
+           toxthresh95>0.5)%>%
+    arrange(toxthresh95)%>%
+    head(1)
+  
+  #plot the CPA, with the confidence interval as a ribbon
+  cprplot<-ggplot(cpr)+
+    geom_point(aes(Proportion,toxprob))+
+    geom_ribbon(aes(Proportion,ymin=toxthresh05,ymax=toxthresh95),col="gray",alpha=0.5)+
+    scale_x_continuous(expression(italic(Alexandrium)~abundance),
+                       trans = "log10",
+                       breaks = c(0.01,1,100),
+                       labels = c("0.01%","1%","100%"))+
+    scale_y_continuous("Prob. of mussels >100 ng/g [STX]")+
+    geom_vline(data=concernthresh,aes(xintercept=Proportion),col="red")+
+    geom_label(data=concernthresh,aes(label=paste("threshold = ",round(Proportion,2),"%\n87th percentile of Alexandrium in dataset",sep=""),x=Proportion*.8,y=.9),col="red")+
+    theme_bw(base_size = 14)+  
+    coord_cartesian(ylim=c(0,1))+
+    theme(panel.grid.major = element_blank(),  
+          panel.grid.minor = element_blank())
+  cprplot
+}
+
+cprplot.sm("Alexandrium",100)
+
+```
+
+
+
+```{r percentile,echo=FALSE,warning=FALSE,include=FALSE,message=FALSE}
+#list of HAB taxa
+Alexsub<-one8s%>%
+  filter(Taxon=="Alexandrium")%>%
+  mutate(rank = percent_rank(Proportion))%>%
+  filter(Proportion>=1.24)%>%
+  arrange(rank)
+
+```
+
+
+
+```{r chlchange,echo=FALSE,warning=FALSE,include=FALSE,message=FALSE}
+timeperiods<-petechl%>%
+  filter(year(date)>=1970)%>%
+  mutate(era=case_when(between(year(date),1970,1989)~"70s-80s",
+                         between(year(date),1990,2009)~"90s-00s",
+                         between(year(date),2010,2024)~"10s-present"),
+        era = factor(era,levels=c('70s-80s','90s-00s','10s-present'),ordered = TRUE),
+         epoch=case_when(between(year(date),1970,1979)~"1970s",
+                         between(year(date),1980,1989)~"1980s",
+                         between(year(date),1990,1999)~"1990s",
+                         between(year(date),2000,2009)~"2000s",
+                         between(year(date),2010,2024)~"2010s-present"),
+         Season = cut(yday(date),breaks=c(0,31,121,212,305,366),labels=c("winter","spring","summer","fall","winter")),
+        Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))
+
+  cbreaks<-c(2.5,5,10,15,20)
+
+modes<-timeperiods%>%
+  group_by(era,Season)%>%
+  summarise(med=median(chl_merge,na.rm=TRUE))
+
+```
+
+
+## Figure 6: Version that combines all seasons and the chlorophyll histograms
+
+```{r CPAcomboallseasons,fig.width=8.5,fig.height=11, dpi=600,echo=FALSE,warning=FALSE,message=FALSE}
+hablist<-c("Alexandrium","Dinophysis","Gonyaulax","Gyrodinium","Heterocapsa","Heterosigma","Noctiluca","Prymnesium","Pseudo-nitzschia")
+#to control the # of iterations you want (I set at 100, but have done as much as 1000, make sure you have enough RAM if you want to try. eventually I will try to make this more efficient with parallelization)
+blanklist<-list()
+one8s_joined<-one8s%>%
+  left_join(petechl,join_by(Date == date,Station==station))%>%
+        mutate(
+          Season = cut(Dayofyear,breaks=c(0,31,121,212,305,366),labels=c("winter","spring","summer","fall","winter")),
+          Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))
+
+timeperiods<-petechl%>%
+  filter(year(date)>=1970)%>%
+  mutate(era=case_when(between(year(date),1970,1989)~"70s-80s",
+                         between(year(date),1990,2009)~"90s-00s",
+                         between(year(date),2010,2024)~"10s-present"),
+        era = factor(era,levels=c('70s-80s','90s-00s','10s-present'),ordered = TRUE),
+         epoch=case_when(between(year(date),1970,1979)~"1970s",
+                         between(year(date),1980,1989)~"1980s",
+                         between(year(date),1990,1999)~"1990s",
+                         between(year(date),2000,2009)~"2000s",
+                         between(year(date),2010,2024)~"2010s-present"),
+         Season = case_when(yday(date)>=213 & yday(date) <=305 ~ 'fall', 
+                                yday(date)>=305 | yday(date)<= 31 ~ 'winter',
+                                yday(date)>=32 & yday(date)<=121 ~ 'spring',
+                                yday(date)>=121 & yday(date)<=212 ~ 'summer'),
+        Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))
+
+  cbreaks<-c(2.5,5,10,15,20)
+
+for (i in hablist){
+    #subset out the taxon and season of interest
+    sub<-one8s_joined%>%
+      filter(Taxon == i,
+             Station != "33")
+    #subset out the relevant threshold to use
+    
+    countmax<-round(quantile(sub$Proportion,probs=0.88,na.rm=TRUE),digits=4)
+    #create column delineating if the threshold was exceeded
+    habtime<-sub %>%
+      mutate(threshold = ifelse(Proportion>countmax,1,0),
+             threshlevel = countmax
+      )
+    #add the data frame to the blank list
+    blanklist[[paste(i)]]<-habtime
+  }
+
+#bind all entries into a data frame
+habtimecombo<-rbindlist(blanklist)
+#loop through each season generating CPAs for each season-taxon combo
+for(y in c("winter", "spring", "summer", "fall")) {
+  habtimeseason<-habtimecombo%>%
+    filter(Season==y,
+           is.na(chl_merge)==FALSE)%>%
+    arrange(chl_merge)%>%
+    group_by(Taxon)%>%
+    mutate(index = seq(length(chl_merge)-1,0,-1),
+           habprob.raw = (sum(threshold)-cumsum(threshold))/index,
+         habprob = habprob.raw/habprob.raw[1]
+    )
+  
+  blanklist<-list()
+  for (x in hablist){
+    habsub<-habtimeseason %>%
+      filter(Taxon == x)
+    set.seed(123)
+    #bootstrap 1000 (or however many) times
+    test<-bootstraps(habsub,times=iterations,apparent = TRUE)
+    
+    cplist<-function(split){
+      split<-analysis(split)%>%
+        arrange(chl_merge)%>%
+        mutate(habprob.bs.raw = (sum(threshold)-cumsum(threshold))/index,
+         habprob.bs = habprob.bs.raw/habprob.bs.raw[1])
+      return(split)
+    }
+    
+    bci<-data.frame(ID = 1:length(habsub$Station))
+    what<-lapply(test$splits, cplist)
+    for (i in seq(1,iterations+1,1)){
+      bci[[paste("run",i,sep="")]]<-what[[i]]$habprob.bs
+    }
+    
+    percentiles_95<-apply(bci,1, function(row) quantile(row,probs = 0.975,na.rm=TRUE))
+    percentiles_5<-apply(bci,1, function(row) quantile(row,probs = 0.025,na.rm=TRUE))
+    percentiles_84<-apply(bci,1, function(row) quantile(row,probs = 0.84,na.rm=TRUE))
+    percentiles_16<-apply(bci,1, function(row) quantile(row,probs = 0.16,na.rm=TRUE))
+    habsub$habthresh95<-percentiles_95
+    habsub$habthresh05<-percentiles_5
+    habsub$habthresh84<-percentiles_84
+    habsub$habthresh16<-percentiles_16
+    
+    blanklist[[paste0(x)]]<-habsub
+  }
+  threshlevels<-habtimeseason%>%
+    group_by(Taxon)%>%
+    summarise(threshlevel = mean(threshlevel))%>%
+    mutate(Season="winter",
+           Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))
+  
+  
+  habtimeseason<-rbindlist(blanklist,idcol=TRUE)
+  assign(paste0("habtime", y), habtimeseason)
+}
+
+habtimeall<-bind_rows(habtimefall,habtimesummer,habtimespring,habtimewinter)%>%
+  mutate(Taxon = ifelse(Taxon=="Pseudo-nitzschia","Pseudo-\nnitzschia",Taxon))
+
+baselines<-habtimeall%>%
+  group_by(Season,Taxon)%>%
+  arrange(chl_merge)%>%
+  slice(1)%>%
+  dplyr::select(Season,Taxon,habprob.raw)%>%
+  mutate(habprob.raw=100*round(habprob.raw,3))%>%
+  pivot_wider(id_cols = Taxon,names_from = Season,values_from = habprob.raw)
+ft <- flextable(as.data.frame(baselines))
+
+# Customize the table appearance (optional)
+ft <- flextable::set_table_properties(ft, layout = "autofit")
+
+# Save the table to a Word document
+doc <- read_docx()
+doc <- body_add_flextable(doc, ft)
+print(doc, target = here("Figures","Table4.docx"))
+
+thresholds<-habtimeall%>%
+  group_by(Taxon)%>%
+  arrange(chl_merge)%>%
+  slice(1)%>%
+  dplyr::select(Taxon,threshlevel)
+
+ft2 <- flextable(as.data.frame(thresholds))
+
+# Customize the table appearance (optional)
+ft2 <- flextable::set_table_properties(ft2, layout = "autofit")
+
+# Save the table to a Word document
+doc2 <- read_docx()
+doc2 <- body_add_flextable(doc, ft2)
+print(doc2, target = here("Figures","Table3.docx"))
+
+threshlevels<-threshlevels%>%
+  mutate(Taxon = ifelse(Taxon=="Pseudo-nitzschia","Pseudo-\nnitzschia",Taxon))
+
+
+cbreaks<-c(2.5,5,10,20)
+cpacomp<-ggplot(habtimeall)+
+    geom_point(aes(chl_merge,habprob),size=0.75)+
+    #geom_line(aes(chl_merge,habthresh16),linetype="dashed",col="black")+
+    #geom_line(aes(chl_merge,habthresh84),linetype="dashed",col="black")+
+    #geom_ribbon(aes(chl_merge,ymin=habthresh05,ymax=habthresh95),col="gray",alpha=0.25)+
+    geom_ribbon(aes(chl_merge,ymin=habthresh16,ymax=habthresh84),col="gray",alpha=0.25)+
+    #geom_smooth(aes(chl_merge,threshold),method = "glm", method.args=list(family="binomial"), se=FALSE)+
+    geom_text(data=threshlevels,aes(label=paste("t=",round(threshlevel,1),"%",sep=""),x=max(habtimeseason$chl_merge,na.rm = TRUE),y=max(habtimeseason$habprob,na.rm = TRUE)))+
+    geom_vline(data=modes,aes(xintercept = med , col=era),linewidth=1,alpha=0.5)+
+    facet_grid(Taxon~Season)+  
+    scale_x_continuous(name=NULL,limits=c(0,log10(25)),breaks = log10(cbreaks),labels = cbreaks)+
+    #scale_y_continuous(trans = "pseudo_log")+
+    scale_color_manual(values = c("#D81B60", "#1E88E5", "#004D40"))+
+    coord_cartesian(ylim=c(0,max(habtimeseason$habprob,na.rm = TRUE)*1.1))+
+    ylab("Likelihood multiple of exceeding baseline abundance")+
+    theme_bw()+
+    theme(legend.position = "none",
+          strip.text.x = element_text(size = 12),
+          strip.text.y = element_text(size = 10),
+          strip.background = element_rect(colour = "white", fill = "white"),
+          plot.title = element_text(hjust = 0.5),
+          panel.grid.major = element_blank(),  
+          panel.grid.minor = element_blank())
+  
+histcomp<-ggplot(timeperiods)+
+  geom_density(aes(chl_merge,after_stat(ndensity),fill=era),position = "identity",alpha=0.5,bins = 50)+
+  scale_x_continuous("Chlorophyll-a (µg/L)",limits=c(0,log10(25)),breaks = log10(cbreaks),labels = cbreaks)+
+  ylab("Normalized density")+
+  facet_wrap(Season~.,nrow=1)+
+  theme_bw()+
+  theme(strip.text.x = element_blank(),
+        legend.title = element_blank(),
+        legend.position = "bottom")+
+  scale_fill_manual(values = c("#D81B60", "#1E88E5", "#004D40"))
+fig6<-cpacomp /histcomp + plot_layout(heights = c(9,1))
+fig6
+
+pdf(here("Figures","Fig6.pdf"),width = 8.5,height=11)
+fig6
+dev.off()
+
+```
+
+
+# Broad-spectrum plot for visual abstract
+```{r smallmultiplot,fig.width=10,fig.height=4, dpi=1000,echo=FALSE,warning=FALSE,message=FALSE}
+smallmulti<-habtimeall%>%
+    filter(Taxon %in% c("Heterosigma","Heterocapsa","Dinophysis"),
+           Season == "fall")%>%
+    ggplot()+
+    geom_point(aes(chl_merge,habprob),size=0.75)+
+    #geom_line(aes(chl_merge,habthresh16),linetype="dashed",col="black")+
+    #geom_line(aes(chl_merge,habthresh84),linetype="dashed",col="black")+
+    #geom_ribbon(aes(chl_merge,ymin=habthresh05,ymax=habthresh95),col="gray",alpha=0.25)+
+    geom_ribbon(aes(chl_merge,ymin=habthresh16,ymax=habthresh84),col="gray",alpha=0.5)+
+    #geom_smooth(aes(chl_merge,threshold),method = "glm", method.args=list(family="binomial"), se=FALSE)+
+    #geom_text(data=threshlevels,aes(label=paste("t=",round(threshlevel,1),"%",sep=""),x=max(habtimeseason$chl_merge,na.rm = TRUE),y=max(habtimeseason$habprob,na.rm = TRUE)))+
+    #geom_vline(data=modes,aes(xintercept = med , col=era),linewidth=1,alpha=0.5)+
+    facet_grid(.~Taxon,
+    labeller = labeller(Taxon = as_labeller(function(x) paste0("italic('", x, "')"),
+                                            default = label_parsed)))+  
+    scale_x_continuous(limits=c(0,log10(15)),breaks = log10(cbreaks),labels = cbreaks)+
+    #scale_y_continuous(trans = "pseudo_log")+
+    scale_color_manual(values = c("#D81B60", "#1E88E5", "#004D40"))+
+    coord_cartesian(ylim=c(0,max(habtimeseason$habprob,na.rm = TRUE)*1.1))+
+    ylab("Likelihood multiple of\ngreater than baseline abundance")+
+    xlab("Chl-a (µg/L)")+
+    theme_bw(base_size = 16)+
+    theme(legend.position = "none",
+          strip.text.x = element_text(size = 14),
+          strip.text.y = element_text(size = 14),
+          strip.background = element_rect(colour = "black", fill = "white"),
+          plot.title = element_text(hjust = 0.5),
+          panel.grid.major = element_blank(),  
+          panel.grid.minor = element_blank())
+smallmulti
+
+```
+
+## Figure 7 (Combined CPA for all seasons, quantifying nonlinear increases in probability)
+
+This section takes a subset of taxa from the previous plot and then creates a combined CPA, in this case looking at the likelihood of Dinophysis OR Alexandrium or Heterosigma exceeding their respective threshold relative abundances. I also include a couple methods of identifying inflections in the data: one is a changepoint analysis using the EnvCPT package, using a technique similar to ARIMA to identify inflections. The other is a GAM fit to the CPA data, then isolating the instantaneous change of the GAM function using a function called "derivatives" from the gratia package. It allows us to see what parts of the distribution are associated with greater change in likelihood. 
+
+
+```{r CPAgrouped4season,fig.width=8.5,fig.height=8, dpi=600,echo=FALSE,warning=FALSE,message=FALSE}
+
+blanklistgroup<-list()
+
+for (y in c('winter','spring','summer','fall')){
+  
+  for (i in hablist){
+    sub<-one8s %>%
+      mutate(Season = case_when(Dayofyear>=213 & Dayofyear <=305 ~ 'fall', 
+                                Dayofyear>=305 | Dayofyear<= 31 ~ 'winter',
+                                Dayofyear>=32 & Dayofyear<=121 ~ 'spring',
+                                Dayofyear>=121 & Dayofyear<=212 ~ 'summer'),
+             Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))%>%
+      filter(Taxon %in% hablist,
+        Station != "33",
+             Season ==y)
+    
+    countmax<-round(quantile(sub$Proportion,probs=0.87,na.rm=TRUE),digits=4)
+    habtime<-sub %>%
+      left_join(petechl,join_by(closest(Date <= date),Station==station))%>%
+      mutate(timediff = as.numeric(Date-date),
+             threshold = ifelse(Proportion>countmax,1,0),
+             threshlevel = countmax
+      )%>%
+      filter(timediff<14,
+             Season==y)
+    
+    blanklistgroup[[paste(i,y,sep="_")]]<-habtime
+  }
+  habgroup<-rbindlist(blanklistgroup)
+  habgroupfall<-habgroup%>%
+  filter(Season==y,
+         is.na(chl_merge)==FALSE)%>%
+  arrange(chl_merge)%>%
+  dplyr::group_by(chl_merge)%>%
+  summarize(chl_merge=mean(chl_merge),
+            habsum = max(threshold)
+  )%>%
+  mutate(index = seq(length(chl_merge)-1,0,-1),
+         habprob.raw = (sum(habsum)-cumsum(habsum))/index,
+         habprob = habprob.raw/habprob.raw[1])
+
+
+set.seed(123)
+testgroup<-bootstraps(habgroupfall,times=iterations,apparent = TRUE)
+
+cplistgroup<-function(split){
+  split<-analysis(split)%>%
+    arrange(chl_merge)%>%
+    mutate(habprob.bs.raw = (sum(habsum)-cumsum(habsum))/index,
+         habprob.bs = habprob.bs.raw/habprob.bs.raw[1])
+  return(split)
+}
+
+bci<-data.frame(ID = 1:nrow(habgroupfall))
+what<-lapply(testgroup$splits, cplistgroup)
+for (i in seq(1,iterations+1,1)){
+  bci[[paste("run",i,sep="")]]<-what[[i]]$habprob.bs
+}
+
+percentiles_95<-apply(bci,1, function(row) quantile(row,probs = 0.975,na.rm=TRUE))
+percentiles_5<-apply(bci,1, function(row) quantile(row,probs = 0.025,na.rm=TRUE))
+percentiles_84<-apply(bci,1, function(row) quantile(row,probs = 0.84,na.rm=TRUE))
+percentiles_16<-apply(bci,1, function(row) quantile(row,probs = 0.16,na.rm=TRUE))
+habgroupfall$habthresh84<-percentiles_84
+habgroupfall$habthresh16<-percentiles_16
+habgroupfall$habthresh95<-percentiles_95
+habgroupfall$habthresh05<-percentiles_5
+habgroupfall<-habgroupfall%>%
+  mutate(nonlog = 10^chl_merge,
+         Season = y)
+
+habchange<-habgroupfall%>%
+  filter(is.na(habprob)==FALSE)
+test<-envcpt(habchange$habprob) #change point analysis on time series using "piecewise linear trend over time with ARIMA(2) errors"
+cpts<-test$meancpt@cpts
+cpts<-data.frame(chl_merge=habchange$chl_merge[cpts],peak="peak")%>%
+  filter(chl_merge<1)%>%
+  mutate(Season = y)
+cptmodel<-gam(habprob~s(chl_merge,k=30),data = habgroupfall,method="REML")
+cmpred<-data.frame(chl_merge = seq(0.3,1.1,0.001),habprob=NA)%>%
+  mutate(predict = predict.gam(cptmodel,newdata=.))
+inst<-derivatives(cptmodel,data = cmpred)
+cmpred<-cmpred%>%
+  mutate(derivative = inst$.derivative,
+         se = inst$.se)%>%
+  mutate(negative = ifelse(derivative<0,1,0),
+         slopeflip = negative-lead(negative),
+         Season = y)
+
+assign(paste0("cpts", y), cpts)
+assign(paste0("habgroup", y), habgroupfall)
+assign(paste0("cmpred", y), cmpred)
+}
+habgroup<-bind_rows(habgroupwinter,habgroupspring,habgroupsummer,habgroupfall)%>%
+      mutate(Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))
+cmpred<-bind_rows(cmpredwinter,cmpredspring,cmpredsummer,cmpredfall)%>%
+      mutate(Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))%>%
+      filter(se<abs(derivative))
+cpts<-bind_rows(cptswinter,cptsspring,cptssummer,cptsfall)%>%
+      mutate(Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))
+
+#library(ggrepel)
+groupbreaks<-c(2.5,5,10,20)
+cprhab<-ggplot(habgroup)+
+  geom_point(aes(chl_merge,habprob),size=2)+
+  #geom_ribbon(aes(chl_merge,ymin=habthresh05,ymax=habthresh95),col="gray",alpha=0.1)+
+  geom_ribbon(aes(chl_merge,ymin=habthresh16,ymax=habthresh84),col="gray",alpha=0.25)+
+  geom_vline(data = cpts %>% filter(Season %in% c("spring")), aes(xintercept = chl_merge))+
+  geom_vline(data = cpts %>% filter(Season %in% c("fall")), aes(xintercept = chl_merge))+
+  geom_vline(data = cpts %>% filter(Season %in% c("summer")), aes(xintercept = chl_merge))+
+  geom_vline(data = cpts %>% filter(Season %in% c("winter")), aes(xintercept = chl_merge))+
+  #geom_line(aes(chl_merge,habthresh16),linetype="dashed",col="black")+
+  #geom_line(aes(chl_merge,habthresh84),linetype="dashed",col="black")+
+  geom_point(data=cmpred,aes(chl_merge,predict,col=asinh(derivative)),alpha=0.2)+
+  #geom_label_repel(data=cpts,aes(label=paste(round(10^chl_merge,2),"\nµg/L"),x=chl_merge,y=0))+
+  scale_x_continuous(breaks = log10(groupbreaks),labels = groupbreaks)+
+  scale_y_continuous("Liklihood multiple of any HAB\nexceeding 87th percentile")+
+  scale_color_viridis_c("Change in prob. multiplier\nper µg/L chl-a",option = "C")+
+  xlab(element_blank())+
+  facet_grid(.~Season,scales="free_x")+
+  theme_bw(base_size = 14)+  
+  coord_cartesian(ylim=c(0,2))+
+  theme(legend.position = "none",
+        strip.background = element_rect(colour = "white", fill = "white"))
+
+blanklistgroup<-list()
+
+for (y in c('winter','spring','summer','fall')){
+  
+  for (i in c("Dinophysis","Gonyaulax","Heterocapsa","Heterosigma","Gyrodinium")){
+    sub<-one8s %>%
+      mutate(Season = case_when(Dayofyear>=213 & Dayofyear <=305 ~ 'fall', 
+                                Dayofyear>=305 | Dayofyear<= 31 ~ 'winter',
+                                Dayofyear>=32 & Dayofyear<=121 ~ 'spring',
+                                Dayofyear>=121 & Dayofyear<=212 ~ 'summer'),
+             Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))%>%
+      filter(Taxon %in% c("Dinophysis","Gonyaulax","Heterocapsa","Heterosigma","Gyrodinium"),
+        Station != "33",
+             Season ==y)
+    
+    countmax<-round(quantile(sub$Proportion,probs=0.87,na.rm=TRUE),digits=4)
+    habtime<-sub %>%
+      left_join(petechl,join_by(closest(Date <= date),Station==station))%>%
+      mutate(timediff = as.numeric(Date-date),
+             threshold = ifelse(Proportion>countmax,1,0),
+             threshlevel = countmax
+      )%>%
+      filter(timediff<14,
+             Season==y)
+    
+    blanklistgroup[[paste(i,y,sep="_")]]<-habtime
+  }
+  habgroup<-rbindlist(blanklistgroup)
+  habgroupfall<-habgroup%>%
+  filter(Season==y,
+         is.na(chl_merge)==FALSE)%>%
+  arrange(chl_merge)%>%
+  dplyr::group_by(chl_merge)%>%
+  summarize(chl_merge=mean(chl_merge),
+            habsum = max(threshold)
+  )%>%
+  mutate(index = seq(length(chl_merge)-1,0,-1),
+         habprob.raw = (sum(habsum)-cumsum(habsum))/index,
+         habprob = habprob.raw/habprob.raw[1])
+
+
+set.seed(123)
+testgroup<-bootstraps(habgroupfall,times=iterations,apparent = TRUE)
+
+cplistgroup<-function(split){
+  split<-analysis(split)%>%
+    arrange(chl_merge)%>%
+    mutate(habprob.bs.raw = (sum(habsum)-cumsum(habsum))/index,
+         habprob.bs = habprob.bs.raw/habprob.bs.raw[1])
+  return(split)
+}
+
+bci<-data.frame(ID = 1:nrow(habgroupfall))
+what<-lapply(testgroup$splits, cplistgroup)
+for (i in seq(1,iterations+1,1)){
+  bci[[paste("run",i,sep="")]]<-what[[i]]$habprob.bs
+}
+
+percentiles_95<-apply(bci,1, function(row) quantile(row,probs = 0.975,na.rm=TRUE))
+percentiles_5<-apply(bci,1, function(row) quantile(row,probs = 0.025,na.rm=TRUE))
+percentiles_84<-apply(bci,1, function(row) quantile(row,probs = 0.84,na.rm=TRUE))
+percentiles_16<-apply(bci,1, function(row) quantile(row,probs = 0.16,na.rm=TRUE))
+habgroupfall$habthresh84<-percentiles_84
+habgroupfall$habthresh16<-percentiles_16
+habgroupfall$habthresh95<-percentiles_95
+habgroupfall$habthresh05<-percentiles_5
+habgroupfall<-habgroupfall%>%
+  mutate(nonlog = 10^chl_merge,
+         Season = y)
+
+habchange<-habgroupfall%>%
+  filter(is.na(habprob)==FALSE)
+test<-envcpt(habchange$habprob) #change point analysis on time series using "piecewise linear trend over time with ARIMA(2) errors"
+cpts<-test$meancpt@cpts
+cpts<-data.frame(chl_merge=habchange$chl_merge[cpts],peak="peak")%>%
+  filter(chl_merge<1)%>%
+  mutate(Season = y)
+cptmodel<-gam(habprob~s(chl_merge,k=30),data = habgroupfall,method="REML")
+cmpred<-data.frame(chl_merge = seq(0.3,1.1,0.001),habprob=NA)%>%
+  mutate(predict = predict.gam(cptmodel,newdata=.))
+inst<-derivatives(cptmodel,data = cmpred)
+cmpred<-cmpred%>%
+  mutate(derivative = inst$.derivative,
+         se = inst$.se,
+         negative = ifelse(derivative<0,1,0),
+         slopeflip = negative-lead(negative),
+         Season = y)
+
+assign(paste0("cpts", y), cpts)
+assign(paste0("habgroup", y), habgroupfall)
+assign(paste0("cmpred", y), cmpred)
+}
+habgroup<-bind_rows(habgroupwinter,habgroupspring,habgroupsummer,habgroupfall)%>%
+      mutate(Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))
+cmpred<-bind_rows(cmpredwinter,cmpredspring,cmpredsummer,cmpredfall)%>%
+      mutate(Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))%>%
+      filter(se<abs(derivative))
+cpts<-bind_rows(cptswinter,cptsspring,cptssummer,cptsfall)%>%
+      mutate(Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))
+
+#library(ggrepel)
+groupbreaks<-c(2.5,5,10,20)
+cprhabtop<-ggplot(habgroup)+
+  geom_point(aes(chl_merge,habprob),size=2)+
+  #geom_ribbon(aes(chl_merge,ymin=habthresh05,ymax=habthresh95),col="gray",alpha=0.1)+
+  geom_ribbon(aes(chl_merge,ymin=habthresh16,ymax=habthresh84),col="gray",alpha=0.25)+
+  geom_vline(data = cpts %>% filter(Season %in% c("spring")), aes(xintercept = chl_merge))+
+  geom_vline(data = cpts %>% filter(Season %in% c("fall")), aes(xintercept = chl_merge))+
+  geom_vline(data = cpts %>% filter(Season %in% c("summer")), aes(xintercept = chl_merge))+
+  geom_vline(data = cpts %>% filter(Season %in% c("winter")), aes(xintercept = chl_merge))+
+  #geom_line(aes(chl_merge,habthresh16),linetype="dashed",col="black")+
+  #geom_line(aes(chl_merge,habthresh84),linetype="dashed",col="black")+
+  geom_point(data=cmpred,aes(chl_merge,predict,col=asinh(derivative)),alpha=0.2)+
+  #geom_label_repel(data=cpts,aes(label=paste(round(10^chl_merge,2),"\nµg/L"),x=chl_merge,y=0))+
+  scale_x_continuous("Chl-a (µg/L)",breaks = log10(groupbreaks),labels = groupbreaks)+
+  scale_y_continuous("Liklihood multiple of\nfall-associated HABs\nexceeding 87th percentile")+
+  scale_color_viridis_c("Change in prob. multiplier\nper µg/L chl-a",option = "C")+
+  facet_grid(.~Season,scales="free_x")+
+  theme_bw(base_size = 14)+  
+  coord_cartesian(ylim=c(0,2))+
+  theme(legend.position = "bottom",
+        strip.background = element_rect(colour = "white", fill = "white"))
+fig7<-cprhab/cprhabtop + plot_annotation(tag_levels = 'A')
+fig7
+
+pdf(here("Figures","Fig7.pdf"),width = 8.5,height=8)
+fig7
+dev.off()
+```
+
+## Figure S1: Metabarcoding validation
+
+Figure S1 compares microscopy and qPCR values to the 18S data
+
+```{r validation, fig.width=8,fig.height=8, dpi=600,echo=FALSE,warning=FALSE,message=FALSE}
+
+micro<-read.csv(here("data","Microscopy_1992_2021.csv"))
+mtotal<-micro%>%
+  mutate(date=as_date(date),
+         station=as.character(station),
+         genus = ifelse(genus == "Pseudonitzschia", "Pseudo-nitzschia", genus))%>%
+  group_by(date,station)%>%
+  summarise(mtotal=sum(density))
+micro2<-micro%>%
+  dplyr::select(date,station,genus,density,biovolume)%>%
+  mutate(date=as_date(date),
+         station=as.character(station),
+         genus = ifelse(genus == "Pseudonitzschia", "Pseudo-nitzschia", genus))%>%
+  group_by(date,station,genus)%>%
+  summarise(density=sum(density))%>%
+  ungroup()%>%
+  left_join(mtotal,join_by(station,date))%>%
+  mutate(mprop = density/mtotal)
+test<-one8s%>%
+  filter(Taxon %in% habsuspects$Taxa,
+         TotalCount>1000,
+         Proportion<10)%>%
+  left_join(micro2,
+            join_by(Taxon==genus,Date==date,Station==station))%>%
+  filter(Taxon %in% c("Heterosigma","Pseudo-nitzschia","Dinophysis"))
+
+conf18<-ggplot(test,aes(mprop,Proportion,col=Taxon))+
+  geom_point()+
+  geom_smooth(method = "lm",se=F)+
+  scale_y_continuous("18S relative abundance (%)",transform = 'log10')+
+  scale_x_continuous("Microscopy relative abundance (%)",transform = 'log10')+
+  theme_bw()+
+  theme(legend.position = "bottom")
+
+
+a1<-readxl::read_xlsx(here("data","qpcr","20210506_Alexandrium_QPCR.xlsx"))%>%
+  set_names(c("sample","Date","Station","cellsmL"))%>%
+  mutate(Station=as.character(Station),
+         cellsmL=as.numeric(cellsmL))
+
+a2<-read.csv(here("data","qpcr","alex_qpcr_complete_20191105.csv"))%>%
+  dplyr::select(1:4)%>%
+  set_names(c("sample","Date","Station","cellsmL"))%>%
+  mutate(Date=as_date(mdy(Date)),
+         Station=as.character(Station),
+         cellsmL=as.numeric(cellsmL))
+
+aq<-bind_rows(a1,a2)%>%
+  mutate(Station=as.character(Station))
+
+aconf<-one8s%>%
+  filter(Taxon %in% habsuspects$Taxa,
+         TotalCount>1000,
+         Proportion<10)%>%
+  filter(Taxon %in% c("Alexandrium"))%>%
+  left_join(aq,
+            join_by(Date==Date,Station==Station))%>%
+  mutate(detect=ifelse(Proportion>0,1,0))
+
+aconfplotlog<-ggplot(aconf,aes(cellsmL,detect))+
+  geom_point()+
+  stat_smooth(method = "glm", 
+              method.args = list(family = "binomial"),col="#f8766d")+
+  scale_y_continuous("Probability of\nAlexandrium 18S detect")+
+  scale_x_continuous("qPCR cell density (cells/mL)",transform = 'log10')+
+  theme_bw()+
+  theme(legend.position = "bottom")
+
+
+pn1<-readxl::read_xlsx(here("data","qpcr","Psn_QPCR_2023.xlsx"))%>%
+  dplyr::select(1:3,18)%>%
+  set_names(c("Station","Date","sample","cellsmL"))%>%
+  mutate(Station=as.character(Station),
+         cellsmL=as.numeric(cellsmL))
+pn2<-read.csv(here("data","qpcr","pn_qpcr_complete_20191105.csv"))%>%
+  dplyr::select(1:4)%>%
+  set_names(c("sample","Date","Station","cellsmL"))%>%
+  mutate(Date=as_date(mdy(Date)),
+         Station=as.character(Station),
+         cellsmL=as.numeric(cellsmL))
+pnq<-bind_rows(a1,a2)
+pnconf<-one8s%>%
+  filter(Taxon %in% habsuspects$Taxa,
+         TotalCount>1000,
+         Proportion<10)%>%
+  filter(Taxon %in% c("Pseudo-nitzschia"))%>%
+  left_join(pnq,
+            join_by(Date==Date,Station==Station))%>%
+  mutate(detect=ifelse(Proportion>0,1,0))
+
+pnconfplotlog<-ggplot(pnconf,aes(cellsmL,detect))+
+  geom_point()+
+  stat_smooth(method = "glm", 
+              method.args = list(family = "binomial"),col="#619cff")+
+  scale_y_continuous("Probability of\nPseudo-nitzschia 18S detect")+
+  scale_x_continuous("qPCR cell density (cells/mL)",transform = 'log10')+
+  theme_bw()+
+  theme(legend.position = "bottom")
+
+
+figs1new<-conf18 / (aconfplotlog+pnconfplotlog)+plot_annotation(tag_levels = "A")
+figs1new
+
+png(here("Figures","FigS1.png"),width=8,height=8,units='in',res=600,type="cairo")
+figs1new
+dev.off()
+
+```
+## Figure S3: Seasonality of toxin concentration
+
+Figure S3 shows how toxin concentrations vary by season
+
+```{r toxseason, fig.width=8.5,fig.height=4, dpi=600,echo=FALSE,warning=FALSE,message=FALSE}
+thresholds <- data.frame(
+  toxin = c("DA", "STX", "MC"),
+  threshold = c(NA, 800, 10) # Replace these values with the actual thresholds
+)%>%filter(toxin=="STX")
+
+seasonbox<-muss.l2%>%
+  filter(Region %in% c("Central Bay","South Bay") & toxin %in% c("STX")) 
+  bind_rows(allSTX)%>%
+  bind_rows(allDA)%>%
+  mutate(Season = case_when(Dayofyear>=213 & Dayofyear <=305 ~ 'fall', 
+                            Dayofyear>=305 | Dayofyear<= 31 ~ 'winter',
+                            Dayofyear>=32 & Dayofyear<=121 ~ 'spring',
+                            Dayofyear>=121 & Dayofyear<=212 ~ 'summer'),
+         Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE))%>%
+  filter(toxin=="STX")%>%
+  ggplot()+
+  geom_boxplot(aes(Season,value2),outliers = FALSE)+
+  geom_hline(data = thresholds, aes(yintercept = threshold), linetype = "dashed", color = "red") +
+  scale_y_continuous("STX concentration (ng/g)", trans = "log10") +
+  geom_jitter(aes(Season,value2),alpha=0.2)+
+  scale_y_continuous("STX concentration (ng/g)",trans = "log10")+
+  scale_x_discrete(element_blank())+
+  #facet_grid(toxin~.,scales = "free")+
+  theme_bw(base_size = 15)
+seasonbox
+
+png(here("Figures","FigS3.png"),width = 8.5,height=4,units = "in",res=600,type="cairo")
+seasonbox
+dev.off()
+```
+
+## Figure S4: Chl-a vs toxin concentration by season
+
+```{r chlvstox, echo=FALSE, fig.height=3.5, fig.width=8.5, warning=FALSE, dpi=600,message=FALSE}
+labs<-c(2.5,5,10,20,40)
+breaks<-log10(labs)
+chltox<-muss.l2%>%
+  filter(Region %in% c("Central Bay","South Bay")) %>%
+  mutate(value2 = case_when(value2<0.1 & toxin == "DA"~0.1,
+                            value2<0.1 & toxin == "MC_total"~0.1,
+                            value2<10 & toxin == "STX"~9,
+                            TRUE~value2))%>%
+  mutate(Dayofyear=yday(Date),
+         Season = case_when(Dayofyear>=213 & Dayofyear <=305 ~ 'fall', 
+                            Dayofyear>=305 | Dayofyear<= 31 ~ 'winter',
+                            Dayofyear>=32 & Dayofyear<=121 ~ 'spring',
+                            Dayofyear>=121 & Dayofyear<=212 ~ 'summer'),
+         Season = factor(Season,levels=c('winter','spring','summer','fall'),ordered = TRUE),
+         toxin = case_when(toxin == "DA"~"Domoic acid",
+                           toxin == "MC_total"~"Microcystin",
+                           toxin == "STX"~"Saxitoxin"))%>%
+  left_join(petechl,join_by(closest(Date >= date),NearestPeterson==station))%>%
+  mutate(timediff=Date-date)%>%
+  filter(timediff<14,
+         toxin == "Saxitoxin")%>%
+  ggplot()+
+  geom_point(aes(chl_merge,value2,shape=detect))+
+  scale_y_continuous("Toxin concentration (ng/g)",trans = "log10")+
+  scale_x_continuous("Chl-a (µg/L)",labels = labs,breaks=breaks)+
+  scale_shape_manual(values = c('Detected'=16,'Non-detect'=1)) +
+  facet_grid(.~Season,scales = "free")+
+  theme_bw(base_size = 15)+
+  theme(legend.position = "none")
+chltox
+
+png(here("Figures","FigS4.png"),width = 8.5,height=3.5,units = "in",res=600,type="cairo")
+chltox
+dev.off()
+```

@@ -1,0 +1,36 @@
+SiteCode	Description	Latitude	Longitude	SiteCode2	Region
+BI	Alameda	37.765971	-122.283471	BI	South Bay
+BL	San Rafael	38.015981	-122.50329	BL	Central Bay
+BM	Berkeley	37.868156	-122.317661	BM	Central Bay
+CP	Coyote Point Marina	37.590666	-122.317881	CP	South Bay
+DMB	Dumbarton Bridge	37.505498	-122.118862	DMB	South Bay
+EM	Emeryville	37.838341	-122.313087	EM	Central Bay
+GG	Sir Francis Yacht Club	37.806816	-122.445061	GG	Central Bay
+GGYC	Sir Francis Yacht Club	37.806816	-122.445061	GG	Central Bay
+LE	Palo Alto	37.45775	-122.101193	LE	South Bay
+LL	San Rafael	37.97194	-122.483916	LL	Central Bay
+OP	South San Francisco	37.663707	-122.378624	OP	South Bay
+PC	Paradise Cay	37.916808	-122.47559	PC	Central Bay
+PSP	San Pablo	37.962278	-122.41877	PSP	Central Bay
+RB	Sausalito	37.875813	-122.505552	RB	Central Bay
+RW	Redwood City	37.504726	-122.213746	RW	South Bay
+RWC	Redwood City	37.504726	-122.213746	RW	South Bay
+RYC	Richmond Yacht Club	37.909944	-122.383361	RYC	Central Bay
+SB	San Francisco	37.780063	-122.387287	SB	Central Bay
+SFSF	Tiburon	37.87199	-122.461294	TB	Central Bay
+SMB	San Mateo Bridge	37.584329	-122.250574	SMB	South Bay
+TB	Tiburon	37.87199	-122.461294	TB	Central Bay
+TI	Treasure Island	37.816005	-122.369752	TI	Central Bay
+TM	Presidio Yacht Club	37.83343	-122.47465	TM	Central Bay
+B1	Alameda	37.765971	-122.283471	BI	South Bay
+BM2	Berkeley	37.868156	-122.317661	BM	Central Bay
+CG	Sir Francis Yacht Club	37.806816	-122.445061	GG	Central Bay
+GGYC1	Sir Francis Yacht Club	37.806816	-122.445061	GG	Central Bay
+GGYC2	Sir Francis Yacht Club	37.806816	-122.445061	GG	Central Bay
+LP	Coyote Point Marina	37.590666	-122.317881	CP	South Bay
+PS	San Pablo	37.962278	-122.41877	PSP	Central Bay
+RB1	Sausalito	37.875813	-122.505552	RB	Central Bay
+RB2	Sausalito	37.875813	-122.505552	RB	Central Bay
+SBYC	Sir Francis Yacht Club	37.806816	-122.445061	GG	Central Bay
+SFYC	Sir Francis Yacht Club	37.806816	-122.445061	GG	Central Bay
+SL	Sir Francis Yacht Club	37.806816	-122.445061	NA	Central Bay
